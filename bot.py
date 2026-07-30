@@ -3,7 +3,7 @@ Echospy Telegram bot (webhook-режим, для бесплатного Render W
 
 Обрабатывает команду /start: присылает приветственное сообщение и две кнопки:
   1. "🎮 Начать игру" — открывает Mini App (сайт игры Echospy).
-  2. "ℹ️ Узнать больше" — пока ничего не делает (заглушка).
+  2. "ℹ️ Узнать больше" — открывает Telegram-канал с новостями о проектах.
 
 Работает как маленький HTTP-сервер (Flask) и сам регистрирует себя как
 вебхук в Telegram при старте — используя публичный адрес, который Render
@@ -35,6 +35,9 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 # Ссылка на Mini App (сайт игры).
 MINI_APP_URL = "https://echopills.github.io/echospy/"
 
+# Ссылка на Telegram-канал с новостями о проектах.
+NEWS_CHANNEL_URL = "https://t.me/Echodraftss"
+
 WELCOME_TEXT = (
     "🕵️ *ECHOSPY*\n\n"
     "Вы в игре. Один из вас — шпион.\n"
@@ -44,8 +47,6 @@ WELCOME_TEXT = (
     "Не спались."
 )
 
-LEARN_MORE_CALLBACK = "learn_more_noop"
-
 app = Flask(__name__)
 
 
@@ -53,7 +54,7 @@ def send_welcome(chat_id: int) -> None:
     keyboard = {
         "inline_keyboard": [
             [{"text": "🎮 Начать игру", "web_app": {"url": MINI_APP_URL}}],
-            [{"text": "ℹ️ Узнать больше", "callback_data": LEARN_MORE_CALLBACK}],
+            [{"text": "ℹ️ Узнать больше", "url": NEWS_CHANNEL_URL}],
         ]
     }
     requests.post(
@@ -76,15 +77,6 @@ def webhook():
     message = update.get("message")
     if message and message.get("text", "").startswith("/start"):
         send_welcome(message["chat"]["id"])
-
-    callback_query = update.get("callback_query")
-    if callback_query and callback_query.get("data") == LEARN_MORE_CALLBACK:
-        # Кнопка-заглушка: просто гасим "часики" на кнопке, ничего не делаем.
-        requests.post(
-            f"{API_URL}/answerCallbackQuery",
-            json={"callback_query_id": callback_query["id"]},
-            timeout=10,
-        )
 
     return {"ok": True}
 
