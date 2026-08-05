@@ -2,10 +2,15 @@
 Echospy Telegram bot (webhook-режим, для бесплатного Render Web Service).
 
 Обрабатывает:
-  /start                 — приветствие с кнопками «Начать игру», «Играть онлайн»,
-                            «Узнать больше».
-  /start join_<CODE>     — присоединение к онлайн-комнате по ссылке-приглашению.
-  callback "create_room" — создание новой онлайн-комнаты (кнопка «🌐 Играть онлайн»).
+  /start                 — приветствие с кнопками «Начать игру», «Узнать больше».
+  /start join_<CODE>     — присоединение к онлайн-комнате по ссылке-приглашению
+                            (просто присылает кнопку «Открыть комнату» — сам
+                            игрок регистрируется в комнате уже внутри мини-приложения).
+
+Кнопка «Играть онлайн» и вся логика комнаты (создание, слоты игроков, приглашения)
+живут в самом мини-приложении (index.html), а не в чате бота. Бот здесь только:
+  1) отдаёт мини-приложению API для комнат (создание/вход/старт/раздача ролей);
+  2) отвечает на диплинк-приглашения текстом со ссылкой на комнату.
 
 Онлайн-комнаты хранятся в памяти процесса (без базы данных). Пока хотя бы
 один игрок находится в комнате с открытым мини-приложением, оно опрашивает
@@ -67,7 +72,7 @@ app = Flask(__name__)
 # Онлайн-комнаты (в памяти).
 # ---------------------------------------------------------------------------
 
-rooms = {}  # code -> {host_id, players: [{id, name}], started, topic, spy_id, created_at}
+rooms = {}  # code -> {host_id, players: [{id, name, photo_url}], started, topic, spy_id, created_at}
 ROOM_CODE_CHARS = "".join(c for c in (string.ascii_uppercase + string.digits) if c not in "0O1I")
 ROOM_MAX_AGE_SECONDS = 3 * 60 * 60  # чистим комнаты старше 3 часов
 BOT_USERNAME = None  # заполняется в setup_webhook() через getMe
@@ -140,32 +145,14 @@ def send_welcome(chat_id):
     keyboard = {
         "inline_keyboard": [
             [{"text": "🎮 Начать игру", "web_app": {"url": MINI_APP_URL}}],
-            [{"text": "🌐 Играть онлайн", "callback_data": "create_room"}],
             [{"text": "ℹ️ Узнать больше", "url": NEWS_CHANNEL_URL}],
         ]
     }
     send_message(chat_id, WELCOME_TEXT, keyboard)
 
 
-def send_room_created(chat_id, code):
-    invite_link = f"https://t.me/{BOT_USERNAME}?start=join_{code}" if BOT_USERNAME else "(ссылка недоступна)"
-    text = (
-        "🌐 *Комната создана!*\n\n"
-        f"Код комнаты: `{code}`\n\n"
-        "Отправь эту ссылку друзьям, чтобы позвать их в игру:\n"
-        f"{invite_link}\n\n"
-        "Когда все соберутся — открой комнату и жми «Начать игру»."
-    )
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": "📲 Открыть комнату", "web_app": {"url": f"{MINI_APP_URL}?room={code}"}}],
-        ]
-    }
-    send_message(chat_id, text, keyboard)
-
-
 def send_room_joined(chat_id, code):
-    text = f"✅ Ты в комнате `{code}`!\nОткрой приложение и жди, пока хост начнёт игру."
+    text = f"✅ Приглашение в комнату `{code}` принято!\nОткрой комнату — там и определится твоя роль."
     keyboard = {
         "inline_keyboard": [
             [{"text": "📲 Открыть комнату", "web_app": {"url": f"{MINI_APP_URL}?room={code}"}}],
@@ -185,48 +172,27 @@ def webhook():
 
     callback_query = update.get("callback_query")
     if callback_query:
-        data = callback_query.get("data", "")
-        chat_id = callback_query["message"]["chat"]["id"]
-        from_user = callback_query["from"]
-
-        if data == "create_room":
-            prune_old_rooms()
-            code = gen_room_code()
-            rooms[code] = {
-                "host_id": from_user["id"],
-                "players": [{"id": from_user["id"], "name": from_user.get("first_name", "Игрок")}],
-                "started": False,
-                "topic": None,
-                "spy_id": None,
-                "created_at": time.time(),
-            }
-            answer_callback_query(callback_query["id"])
-            send_room_created(chat_id, code)
-        else:
-            answer_callback_query(callback_query["id"])
-
+        # Callback-кнопок в текущем меню бота нет, но на всякий случай гасим
+        # "часики" на кнопке, если Telegram всё же пришлёт такой апдейт.
+        answer_callback_query(callback_query["id"])
         return {"ok": True}
 
     message = update.get("message")
     if message:
         text = message.get("text", "")
         chat_id = message["chat"]["id"]
-        from_user = message["from"]
 
         if text.startswith("/start"):
             payload = text[len("/start"):].strip()
             if payload.startswith("join_"):
                 code = payload[len("join_"):].strip().upper()
+                prune_old_rooms()
                 room = rooms.get(code)
                 if not room:
-                    send_message(chat_id, "❌ Комната не найдена или уже закрыта. Попроси хоста создать новую.")
+                    send_message(chat_id, "❌ Комната не найдена или уже закрыта. Попроси хоста прислать ссылку заново.")
                 elif room["started"]:
                     send_message(chat_id, "❌ Игра в этой комнате уже началась.")
                 else:
-                    if not any(p["id"] == from_user["id"] for p in room["players"]):
-                        room["players"].append(
-                            {"id": from_user["id"], "name": from_user.get("first_name", "Игрок")}
-                        )
                     send_room_joined(chat_id, code)
             else:
                 send_welcome(chat_id)
@@ -246,6 +212,64 @@ def add_cors_headers(resp):
     return resp
 
 
+@app.route("/api/room/create", methods=["POST", "OPTIONS"])
+def api_room_create():
+    if request.method == "OPTIONS":
+        return "", 204
+    body = request.get_json(force=True, silent=True) or {}
+    user = validate_init_data(body.get("initData", ""))
+    if not user:
+        return {"error": "auth_failed"}, 401
+    prune_old_rooms()
+    code = gen_room_code()
+    rooms[code] = {
+        "host_id": user["id"],
+        "players": [
+            {
+                "id": user["id"],
+                "name": user.get("first_name", "Игрок"),
+                "photo_url": user.get("photo_url"),
+            }
+        ],
+        "started": False,
+        "topic": None,
+        "spy_id": None,
+        "created_at": time.time(),
+    }
+    return {"code": code}
+
+
+@app.route("/api/room/<code>/join", methods=["POST", "OPTIONS"])
+def api_room_join(code):
+    if request.method == "OPTIONS":
+        return "", 204
+    room = rooms.get(code.upper())
+    if not room:
+        return {"error": "not_found"}, 404
+    body = request.get_json(force=True, silent=True) or {}
+    user = validate_init_data(body.get("initData", ""))
+    if not user:
+        return {"error": "auth_failed"}, 401
+
+    existing = next((p for p in room["players"] if p["id"] == user["id"]), None)
+    if existing:
+        existing["name"] = user.get("first_name", existing["name"])
+        existing["photo_url"] = user.get("photo_url", existing.get("photo_url"))
+        return {"ok": True}
+
+    if room["started"]:
+        return {"error": "already_started"}, 400
+
+    room["players"].append(
+        {
+            "id": user["id"],
+            "name": user.get("first_name", "Игрок"),
+            "photo_url": user.get("photo_url"),
+        }
+    )
+    return {"ok": True}
+
+
 @app.route("/api/room/<code>", methods=["GET"])
 def api_room_status(code):
     room = rooms.get(code.upper())
@@ -253,7 +277,7 @@ def api_room_status(code):
         return {"error": "not_found"}, 404
     return {
         "hostId": room["host_id"],
-        "players": [{"name": p["name"]} for p in room["players"]],
+        "players": [{"name": p["name"], "photoUrl": p.get("photo_url")} for p in room["players"]],
         "started": room["started"],
     }
 
